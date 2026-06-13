@@ -1,0 +1,505 @@
+#include <msp430f5529.h>
+
+// ==================== DEFINICIONES ====================
+#define BMP280_ADDR     0x76    // Dirección del BMP280
+#define OLED_ADDR       0x3C    // Dirección de la OLED (ajusta según tu escáner)
+#define ARDUINO_ADDR    0x08    // Dirección del Arduino (configurable)
+
+// ==================== FUENTE SIMPLIFICADA 5x8 ====================
+// Solo: números 0-9, punto, C, espacio, menos
+const unsigned char font[17][5] = {
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // 0: espacio
+    {0x3E, 0x51, 0x49, 0x45, 0x3E}, // 1: '0'
+    {0x00, 0x42, 0x7F, 0x40, 0x00}, // 2: '1'
+    {0x42, 0x61, 0x51, 0x49, 0x46}, // 3: '2'
+    {0x21, 0x41, 0x45, 0x4B, 0x31}, // 4: '3'
+    {0x18, 0x14, 0x12, 0x7F, 0x10}, // 5: '4'
+    {0x27, 0x45, 0x45, 0x45, 0x39}, // 6: '5'
+    {0x3C, 0x4A, 0x49, 0x49, 0x30}, // 7: '6'
+    {0x01, 0x71, 0x09, 0x05, 0x03}, // 8: '7'
+    {0x36, 0x49, 0x49, 0x49, 0x36}, // 9: '8'
+    {0x06, 0x49, 0x49, 0x29, 0x1E}, // 10: '9'
+    {0x00, 0x60, 0x60, 0x00, 0x00}, // 11: '.'
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // 12: reservado
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // 13: reservado
+    {0x3E, 0x41, 0x41, 0x41, 0x3E}, // 14: 'O' (para grados Celsius)
+    {0x08, 0x08, 0x08, 0x08, 0x08}, // 15: '-'
+    {0x00, 0x00, 0x00, 0x00, 0x00}, // 16: reservado
+};
+
+// ==================== PROTOTIPOS ====================
+// UART
+void configurarUART(void);
+void enviarChar(char c);
+void enviarCadena(const char *str);
+void enviarNumero(int num);
+void delay_ms(unsigned int ms);
+
+// I2C
+void initI2C(void);
+void I2C_Start(void);
+void I2C_Stop(void);
+unsigned char I2C_WriteByte(unsigned char data);
+void I2C_ReadBytes(unsigned char *buffer, unsigned char len);
+
+// BMP280
+void initBMP280(void);
+int readBMP280_temp(void);
+
+// OLED
+void initOLED(void);
+void OLED_comando(unsigned char cmd);
+void OLED_dato(unsigned char data);
+void OLED_clear(void);
+void OLED_gotoxy(unsigned char x, unsigned char y);
+void OLED_char(char c);
+void OLED_string(const char *str);
+void OLED_numero(int num);
+void OLED_temperatura(int temp);
+
+// Arduino I2C
+void enviarAArduino(const char *str);
+void enviarTemperaturaAArduino(int temp);
+
+// ==================== UART ====================
+void configurarUART(void)
+{
+    P4SEL |= BIT4 + BIT5;
+
+    UCA1CTL1 |= UCSWRST;
+    UCA1CTL0 = 0x00;
+    UCA1CTL1 |= UCSSEL_1;
+    UCA1BR0 = 3;
+    UCA1BR1 = 0;
+    UCA1MCTL = UCBRS_3;
+    UCA1CTL1 &= ~UCSWRST;
+}
+
+void enviarChar(char c)
+{
+    while(!(UCA1IFG & UCTXIFG));
+    UCA1TXBUF = c;
+}
+
+void enviarCadena(const char *str)
+{
+    while(*str) enviarChar(*str++);
+}
+
+void enviarNumero(int num)
+{
+    char buffer[8];
+    char *ptr = buffer + 7;
+    unsigned int n;
+
+    *ptr = '\0';
+
+    if(num < 0) {
+        enviarChar('-');
+        n = -num;
+    } else {
+        n = num;
+    }
+
+    do {
+        *(--ptr) = '0' + (n % 10);
+        n /= 10;
+    } while(n > 0);
+
+    enviarCadena(ptr);
+}
+
+void delay_ms(unsigned int ms)
+{
+    unsigned int i, j;
+    for(i = 0; i < ms; i++) {
+        for(j = 0; j < 500; j++) {
+            __delay_cycles(2);
+        }
+    }
+}
+
+// ==================== I2C ====================
+void initI2C(void)
+{
+    P4SEL |= BIT1 + BIT2;
+
+    UCB1CTL1 |= UCSWRST;
+    UCB1CTL0 = UCMST + UCMODE_3 + UCSYNC;
+    UCB1CTL1 = UCSSEL_2 + UCSWRST;
+    UCB1BR0 = 30;
+    UCB1BR1 = 0;
+    UCB1CTL1 &= ~UCSWRST;
+
+    delay_ms(50);
+}
+
+void I2C_Start(void)
+{
+    while(UCB1CTL1 & UCTXSTP);
+    UCB1CTL1 |= UCTR + UCTXSTT;
+}
+
+void I2C_Stop(void)
+{
+    UCB1CTL1 |= UCTXSTP;
+    while(UCB1CTL1 & UCTXSTP);
+}
+
+unsigned char I2C_WriteByte(unsigned char data)
+{
+    UCB1TXBUF = data;
+    while(!(UCB1IFG & UCTXIFG));
+    if(UCB1IFG & UCNACKIFG) {
+        UCB1IFG &= ~UCNACKIFG;
+        return 1;
+    }
+    return 0;
+}
+
+void I2C_ReadBytes(unsigned char *buffer, unsigned char len)
+{
+    unsigned char i;
+    UCB1CTL1 &= ~UCTR;
+    UCB1CTL1 |= UCTXSTT;
+
+    for(i = 0; i < len; i++) {
+        if(i == len-1) UCB1CTL1 |= UCTXSTP;
+        while(!(UCB1IFG & UCRXIFG));
+        buffer[i] = UCB1RXBUF;
+    }
+}
+
+// ==================== BMP280 ====================
+void initBMP280(void)
+{
+    UCB1I2CSA = BMP280_ADDR;
+
+    I2C_Start();
+    I2C_WriteByte(0xF4);
+    I2C_WriteByte(0x27);
+    I2C_Stop();
+
+    delay_ms(100);
+}
+
+int readBMP280_temp(void)
+{
+    unsigned char data[3];
+    unsigned long temp_raw;
+    int temperatura;
+
+    UCB1I2CSA = BMP280_ADDR;
+
+    I2C_Start();
+    I2C_WriteByte(0xFA);
+    I2C_ReadBytes(data, 3);
+    I2C_Stop();
+
+    temp_raw = (data[0] << 12) | (data[1] << 4) | (data[2] >> 4);
+    temperatura = (temp_raw * 100) / 340 + 2300;
+
+    return temperatura;
+}
+
+// ==================== OLED ====================
+void OLED_comando(unsigned char cmd)
+{
+    UCB1I2CSA = OLED_ADDR;
+    I2C_Start();
+    I2C_WriteByte(0x00);    // Modo comando
+    I2C_WriteByte(cmd);
+    I2C_Stop();
+}
+
+void OLED_dato(unsigned char data)
+{
+    UCB1I2CSA = OLED_ADDR;
+    I2C_Start();
+    I2C_WriteByte(0x40);    // Modo datos
+    I2C_WriteByte(data);
+    I2C_Stop();
+}
+
+void initOLED(void)
+{
+    delay_ms(100);
+
+    OLED_comando(0xAE);  // Display OFF
+    OLED_comando(0xD5);  // Reloj dividir
+    OLED_comando(0x80);
+    OLED_comando(0xA8);  // Multiplex
+    OLED_comando(0x1F);  // 32 líneas
+    OLED_comando(0xD3);  // Offset
+    OLED_comando(0x00);
+    OLED_comando(0x40);  // Línea inicial
+    OLED_comando(0x8D);  // Carga bomba
+    OLED_comando(0x14);
+    OLED_comando(0x20);  // Modo memoria
+    OLED_comando(0x00);
+    OLED_comando(0xA1);  // Segment remap
+    OLED_comando(0xC8);  // COM scan
+    OLED_comando(0xDA);  // COM pins
+    OLED_comando(0x02);
+    OLED_comando(0x81);  // Contraste
+    OLED_comando(0x8F);
+    OLED_comando(0xD9);  // Pre-carga
+    OLED_comando(0xF1);
+    OLED_comando(0xDB);  // VCOM detect
+    OLED_comando(0x40);
+    OLED_comando(0xA4);  // Display on resume
+    OLED_comando(0xA6);  // Normal display
+    OLED_comando(0xAF);  // Display ON
+
+    OLED_clear();
+
+    enviarCadena("[OLED] Inicializada\r\n");
+}
+
+void OLED_clear(void)
+{
+    unsigned int i;
+    OLED_gotoxy(0, 0);
+    for(i = 0; i < 512; i++) {
+        OLED_dato(0x00);
+    }
+}
+
+void OLED_gotoxy(unsigned char x, unsigned char y)
+{
+    OLED_comando(0xB0 | y);           // Página (0-3 para pantalla de 32 pixeles)
+    OLED_comando(0x00 | (x & 0x0F));  // Columna baja
+    OLED_comando(0x10 | (x >> 4));    // Columna alta
+}
+
+void OLED_char(char c)
+{
+    unsigned char i;
+    unsigned char index;
+
+    // Mapear caracter a índice de la fuente
+    switch(c) {
+        case ' ': index = 0; break;
+        case '0': index = 1; break;
+        case '1': index = 2; break;
+        case '2': index = 3; break;
+        case '3': index = 4; break;
+        case '4': index = 5; break;
+        case '5': index = 6; break;
+        case '6': index = 7; break;
+        case '7': index = 8; break;
+        case '8': index = 9; break;
+        case '9': index = 10; break;
+        case '.': index = 11; break;
+        case 'O': index = 14; break;
+        case 'o': index = 14; break;
+        case 'C': index = 14; break;
+        case '-': index = 15; break;
+        default: index = 0; break;
+    }
+
+    for(i = 0; i < 5; i++) {
+        OLED_dato(font[index][i]);
+    }
+    OLED_dato(0x00);  // Espacio entre caracteres
+}
+
+void OLED_string(const char *str)
+{
+    while(*str) {
+        OLED_char(*str++);
+    }
+}
+
+void OLED_numero(int num)
+{
+    unsigned int n;
+
+    if(num < 0) {
+        OLED_char('-');
+        n = -num;
+    } else {
+        n = num;
+    }
+
+    if(n == 0) {
+        OLED_char('0');
+        return;
+    }
+
+    // Encontrar el dígito más significativo
+    unsigned int divisor = 10000;
+    while(divisor > 0 && n / divisor == 0) {
+        divisor /= 10;
+    }
+
+    while(divisor > 0) {
+        OLED_char('0' + (n / divisor));
+        n %= divisor;
+        divisor /= 10;
+    }
+}
+
+void OLED_temperatura(int temp)
+{
+    int entero = temp / 200;
+    int decimal = temp % 100;
+
+    OLED_numero(entero);
+    OLED_char('.');
+
+    // Mostrar decimal con 2 dígitos
+    if(decimal < 10) OLED_char('0');
+    OLED_numero(decimal);
+    OLED_char(' ');
+    OLED_char('C');
+}
+
+// ==================== COMUNICACIÓN CON ARDUINO ====================
+void enviarAArduino(const char *str)
+{
+    UCB1I2CSA = ARDUINO_ADDR;
+
+    I2C_Start();
+    if(I2C_WriteByte(0x00)) {  // Enviar dirección (puede ser 0x00 o cualquier registro dummy)
+        enviarCadena("[ARDUINO] Error: No ACK\r\n");
+        I2C_Stop();
+        return;
+    }
+
+    // Enviar cada caracter del string
+    while(*str) {
+        if(I2C_WriteByte(*str++)) {
+            enviarCadena("[ARDUINO] Error enviando datos\r\n");
+            I2C_Stop();
+            return;
+        }
+        delay_ms(1);  // Pequeña pausa entre caracteres
+    }
+
+    I2C_Stop();
+    enviarCadena("[ARDUINO] Mensaje enviado\r\n");
+}
+
+void enviarTemperaturaAArduino(int temp)
+{
+    int entero = temp / 200;
+    int decimal = temp % 100;
+    char buffer[20];
+    unsigned char i = 0;
+
+    UCB1I2CSA = ARDUINO_ADDR;
+
+    I2C_Start();
+    if(I2C_WriteByte(0x00)) {
+        enviarCadena("[ARDUINO] Error: No ACK al enviar temperatura\r\n");
+        I2C_Stop();
+        return;
+    }
+
+    // Enviar "Temp: "
+    I2C_WriteByte('T');
+    I2C_WriteByte('e');
+    I2C_WriteByte('m');
+    I2C_WriteByte('p');
+    I2C_WriteByte(':');
+    I2C_WriteByte(' ');
+
+    // Enviar parte entera
+    if(entero < 0) {
+        I2C_WriteByte('-');
+        entero = -entero;
+    }
+
+    if(entero == 0) {
+        I2C_WriteByte('0');
+    } else {
+        // Convertir entero a string
+        int divisor = 100;
+        while(divisor > 0 && entero / divisor == 0) {
+            divisor /= 10;
+        }
+        while(divisor > 0) {
+            I2C_WriteByte('0' + (entero / divisor));
+            entero %= divisor;
+            divisor /= 10;
+        }
+    }
+
+    // Enviar punto
+    I2C_WriteByte('.');
+
+    // Enviar decimales
+    if(decimal < 10) I2C_WriteByte('0');
+    if(decimal == 0) {
+        I2C_WriteByte('0');
+        I2C_WriteByte('0');
+    } else {
+        I2C_WriteByte('0' + (decimal / 10));
+        I2C_WriteByte('0' + (decimal % 10));
+    }
+
+    // Enviar 'C' y salto de línea
+    I2C_WriteByte(' ');
+    I2C_WriteByte('C');
+    I2C_WriteByte('\r');
+    I2C_WriteByte('\n');
+
+    I2C_Stop();
+    enviarCadena("[ARDUINO] Temperatura enviada\r\n");
+}
+
+// ==================== MAIN ====================
+void main(void)
+{
+    int temperatura;
+    unsigned int contador = 0;
+
+    WDTCTL = WDTPW | WDTHOLD;
+
+    configurarUART();
+
+    enviarCadena("\r\n========================================\r\n");
+    enviarCadena("   BMP280 + OLED SSD1306 + ARDUINO\r\n");
+    enviarCadena("========================================\r\n");
+
+    initI2C();
+    initBMP280();
+    initOLED();
+
+    enviarCadena("\r\nIniciando lecturas...\r\n\n");
+
+    // Mostrar texto fijo en OLED
+    OLED_clear();
+    OLED_gotoxy(0, 0);
+    OLED_string("Temp:");
+
+    while(1)
+    {
+        contador++;
+        temperatura = readBMP280_temp();
+
+        // Mostrar en UART (PC)
+        enviarCadena("[");
+        enviarNumero(contador);
+        enviarCadena("] Temp: ");
+        enviarNumero(temperatura / 200);
+        enviarCadena(".");
+        enviarNumero(temperatura % 100);
+        enviarCadena(" C\r\n");
+
+        // Mostrar temperatura en OLED (línea 2)
+        OLED_gotoxy(0, 2);
+        OLED_temperatura(temperatura);
+
+        // Enviar "Hola" al Arduino (solo la primera vez o cada cierto tiempo)
+        if(contador == 1 || contador % 10 == 0) {
+            enviarAArduino("Hola desde MSP430");
+        }
+
+        // Enviar temperatura al Arduino (cada 2 segundos)
+        enviarTemperaturaAArduino(temperatura);
+
+        delay_ms(2000);
+    }
+}
