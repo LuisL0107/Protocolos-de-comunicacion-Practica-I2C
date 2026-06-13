@@ -1,0 +1,67 @@
+#include <msp430f5529.h>
+
+#define ARDUINO_ADDR    0x08
+
+void initI2C(void);
+void I2C_Start(void);
+void I2C_Stop(void);
+unsigned char I2C_WriteByte(unsigned char data);
+
+void initI2C(void)
+{
+    P4SEL |= BIT1 + BIT2;
+    
+    UCB1CTL1 |= UCSWRST;
+    UCB1CTL0 = UCMST + UCMODE_3 + UCSYNC;
+    UCB1CTL1 = UCSSEL_2 + UCSWRST;
+    UCB1BR0 = 30;
+    UCB1BR1 = 0;
+    UCB1CTL1 &= ~UCSWRST;
+}
+
+void I2C_Start(void)
+{
+    while(UCB1CTL1 & UCTXSTP);
+    UCB1CTL1 |= UCTR + UCTXSTT;
+}
+
+void I2C_Stop(void)
+{
+    UCB1CTL1 |= UCTXSTP;
+    while(UCB1CTL1 & UCTXSTP);
+}
+
+unsigned char I2C_WriteByte(unsigned char data)
+{
+    UCB1TXBUF = data;
+    while(!(UCB1IFG & UCTXIFG));
+    if(UCB1IFG & UCNACKIFG) {
+        UCB1IFG &= ~UCNACKIFG;
+        return 1;
+    }
+    return 0;
+}
+
+void enviarNumero9(void)
+{
+    UCB1I2CSA = ARDUINO_ADDR;
+    
+    I2C_Start();
+    I2C_WriteByte('9');  // Enviar el caracter '9'
+    I2C_Stop();
+}
+
+void main(void)
+{
+    WDTCTL = WDTPW | WDTHOLD;
+    
+    initI2C();
+    
+    while(1)
+    {
+        enviarNumero9();
+        
+        // Delay para no saturar
+        for(unsigned int i = 0; i < 50000; i++);
+    }
+}
