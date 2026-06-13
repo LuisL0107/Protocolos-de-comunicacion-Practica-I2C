@@ -1,0 +1,28 @@
+#include <Wire.h>
+
+#define I2C_ADDR 0x08
+
+char buffer[64];
+unsigned int bufferPos = 0;
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin(I2C_ADDR);
+  Wire.onReceive(receiveEvent);
+  
+  Serial.println("Arduino listo - Esperando datos del MSP430...");
+  Serial.println("=========================================");
+}
+
+void receiveEvent(int howMany) {
+  while(Wire.available()) {
+    char c = Wire.read();
+    
+    // Imprimir directamente sin buffer
+    Serial.print(c);
+  }
+}
+
+void loop() {
+  delay(100);
+}
