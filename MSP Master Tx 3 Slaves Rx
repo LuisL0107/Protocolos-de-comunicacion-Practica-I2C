@@ -1,9 +1,9 @@
 #include <msp430f5529.h>
 
 // ==================== DEFINICIONES ====================
-#define ESP32_ADDR          0x0A    // Dirección del BMP280
-#define ARDUINOMEGA_ADDR    0x09    // Dirección de la OLED (ajusta según tu escáner)
-#define ARDUINONANO_ADDR    0x08    // Dirección del Arduino (configurable)
+#define ESP32_ADDR          0x0A    // Dirección del ESP32
+#define ARDUINOMEGA_ADDR    0x09    // Dirección del Arduino mega
+#define ARDUINONANO_ADDR    0x08    // Dirección del Arduino Nano
 
 // ==================== PROTOTIPOS ====================
 // UART
