@@ -1,22 +1,30 @@
 #include <msp430f5529.h>
 
-// ==================== DIRECCIONES DE LOS ESCLAVOS ====================
-#define ARDUINO_NANO    0x08
-#define ARDUINO_MEGA    0x09
-#define ESP32_ADDR      0x0A
+// ==================== DEFINICIONES ====================
+#define ESP32_ADDR          0x0A    // Dirección del BMP280
+#define ARDUINOMEGA_ADDR    0x09    // Dirección de la OLED (ajusta según tu escáner)
+#define ARDUINONANO_ADDR    0x08    // Dirección del Arduino (configurable)
 
 // ==================== PROTOTIPOS ====================
+// UART
 void configurarUART(void);
 void enviarChar(char c);
 void enviarCadena(const char *str);
+void enviarNumero(int num);
 void delay_ms(unsigned int ms);
 
+// I2C
 void initI2C(void);
 void I2C_Start(void);
 void I2C_Stop(void);
 unsigned char I2C_WriteByte(unsigned char data);
+void I2C_ReadBytes(unsigned char *buffer, unsigned char len);
 
-void enviarAEsclavo(unsigned char direccion, const char *str);
+
+// Arduino I2C y ESP32
+void enviarAArduinoNano(const char *str);
+void enviarAArduinoMEGA(const char *str);
+void enviarAESP32(const char *str);
 
 // ==================== UART ====================
 void configurarUART(void)
@@ -40,9 +48,30 @@ void enviarChar(char c)
 
 void enviarCadena(const char *str)
 {
-    while(*str) {
-        enviarChar(*str++);
+    while(*str) enviarChar(*str++);
+}
+
+void enviarNumero(int num)
+{
+    char buffer[8];
+    char *ptr = buffer + 7;
+    unsigned int n;
+
+    *ptr = '\0';
+
+    if(num < 0) {
+        enviarChar('-');
+        n = -num;
+    } else {
+        n = num;
     }
+
+    do {
+        *(--ptr) = '0' + (n % 10);
+        n /= 10;
+    } while(n > 0);
+
+    enviarCadena(ptr);
 }
 
 void delay_ms(unsigned int ms)
@@ -58,10 +87,8 @@ void delay_ms(unsigned int ms)
 // ==================== I2C ====================
 void initI2C(void)
 {
-    // Configurar pines P4.1 (SDA) y P4.2 (SCL)
     P4SEL |= BIT1 + BIT2;
 
-    // Configurar USCI_B1 como I2C maestro
     UCB1CTL1 |= UCSWRST;
     UCB1CTL0 = UCMST + UCMODE_3 + UCSYNC;
     UCB1CTL1 = UCSSEL_2 + UCSWRST;
@@ -70,9 +97,6 @@ void initI2C(void)
     UCB1CTL1 &= ~UCSWRST;
 
     delay_ms(50);
-
-    // Mensaje de confirmación
-    enviarCadena("[I2C] Inicializado\r\n");
 }
 
 void I2C_Start(void)
@@ -93,105 +117,128 @@ unsigned char I2C_WriteByte(unsigned char data)
     while(!(UCB1IFG & UCTXIFG));
     if(UCB1IFG & UCNACKIFG) {
         UCB1IFG &= ~UCNACKIFG;
-        return 1;  // Error
+        return 1;
     }
-    return 0;  // OK
+    return 0;
 }
 
-// ==================== ENVÍO A ESCLAVO ====================
-void enviarAEsclavo(unsigned char direccion, const char *str)
+void I2C_ReadBytes(unsigned char *buffer, unsigned char len)
 {
-    I2C_Start();
+    unsigned char i;
+    UCB1CTL1 &= ~UCTR;
+    UCB1CTL1 |= UCTXSTT;
 
-    // Enviar dirección del esclavo (shift left para escritura)
-    if(I2C_WriteByte(direccion << 1)) {
-        enviarCadena("Error: No ACK en direccion 0x");
-        // Mostrar dirección en hex
-        unsigned char high = (direccion >> 4) & 0x0F;
-        unsigned char low = direccion & 0x0F;
-        enviarChar(high < 10 ? '0' + high : 'A' + high - 10);
-        enviarChar(low < 10 ? '0' + low : 'A' + low - 10);
-        enviarCadena("\r\n");
+    for(i = 0; i < len; i++) {
+        if(i == len-1) UCB1CTL1 |= UCTXSTP;
+        while(!(UCB1IFG & UCRXIFG));
+        buffer[i] = UCB1RXBUF;
+    }
+}
+
+// ==================== COMUNICACIÓN CON ARDUINO Nano ====================
+void enviarAArduinoNano(const char *str)
+{
+    UCB1I2CSA = ARDUINONANO_ADDR;
+
+    I2C_Start();
+    if(I2C_WriteByte(0x00)) {  // Enviar dirección (puede ser 0x00 o cualquier registro dummy)
+        enviarCadena("[ARDUINO NANO] Error: No ACK\r\n");
         I2C_Stop();
         return;
     }
 
-    // Enviar cada caracter del mensaje
+    // Enviar cada caracter del string
     while(*str) {
         if(I2C_WriteByte(*str++)) {
-            enviarCadena("Error enviando dato\r\n");
+            enviarCadena("[ARDUINO NANO] Error enviando datos\r\n");
             I2C_Stop();
             return;
         }
+        delay_ms(1);  // Pequeña pausa entre caracteres
     }
 
     I2C_Stop();
-
-    // Mensaje de éxito
-    enviarCadena("OK: Enviado a 0x");
-    unsigned char high = (direccion >> 4) & 0x0F;
-    unsigned char low = direccion & 0x0F;
-    enviarChar(high < 10 ? '0' + high : 'A' + high - 10);
-    enviarChar(low < 10 ? '0' + low : 'A' + low - 10);
-    enviarCadena("\r\n");
+    enviarCadena("[ARDUINO NANO] Mensaje enviado\r\n");
 }
 
-// ==================== FUNCIÓN PARA ENVIAR NÚMERO (solo para debug) ====================
-void enviarNumero(unsigned int num)
+// ==================== COMUNICACIÓN CON ARDUINO Mega ====================
+void enviarAArduinoMEGA(const char *str)
 {
-    char buffer[6];
-    char *ptr = buffer + 5;
-    *ptr = '\0';
-    do {
-        *(--ptr) = '0' + (num % 10);
-        num /= 10;
-    } while(num > 0);
-    enviarCadena(ptr);
+    UCB1I2CSA = ARDUINOMEGA_ADDR;
+
+    I2C_Start();
+    if(I2C_WriteByte(0x00)) {  // Enviar dirección (puede ser 0x00 o cualquier registro dummy)
+        enviarCadena("[ARDUINO MEGA] Error: No ACK\r\n");
+        I2C_Stop();
+        return;
+    }
+
+    // Enviar cada caracter del string
+    while(*str) {
+        if(I2C_WriteByte(*str++)) {
+            enviarCadena("[ARDUINO MEGA] Error enviando datos\r\n");
+            I2C_Stop();
+            return;
+        }
+        delay_ms(1);  // Pequeña pausa entre caracteres
+    }
+
+    I2C_Stop();
+    enviarCadena("[ARDUINO MEGA] Mensaje enviado\r\n");
+}
+
+// ==================== COMUNICACIÓN CON ESP32 ====================
+void enviarAESP32(const char *str)
+{
+    UCB1I2CSA = ESP32_ADDR;
+
+    I2C_Start();
+    if(I2C_WriteByte(0x00)) {  // Enviar dirección (puede ser 0x00 o cualquier registro dummy)
+        enviarCadena("[ESP32] Error: No ACK\r\n");
+        I2C_Stop();
+        return;
+    }
+
+    // Enviar cada caracter del string
+    while(*str) {
+        if(I2C_WriteByte(*str++)) {
+            enviarCadena("[ESP32] Error enviando datos\r\n");
+            I2C_Stop();
+            return;
+        }
+        delay_ms(1);  // Pequeña pausa entre caracteres
+    }
+
+    I2C_Stop();
+    enviarCadena("[ESP32] Mensaje enviado\r\n");
 }
 
 // ==================== MAIN ====================
 void main(void)
 {
+    int temperatura;
     unsigned int contador = 0;
 
-    // Detener watchdog
     WDTCTL = WDTPW | WDTHOLD;
 
-    // Inicializar UART
     configurarUART();
 
     enviarCadena("\r\n========================================\r\n");
-    enviarCadena("   Enviando Hola a 3 dispositivos\r\n");
-    enviarCadena("========================================\r\n");
-    enviarCadena("Nano: 0x08 | Mega: 0x09 | ESP32: 0x0A\r\n");
+    enviarCadena("   ESP32 + ARDUINO Mega + ARDUINO Nano\r\n");
     enviarCadena("========================================\r\n");
 
-    // Inicializar I2C
     initI2C();
-
-    enviarCadena("\r\nIniciando envios...\r\n\n");
 
     while(1)
     {
         contador++;
 
-        enviarCadena("[");
-        enviarNumero(contador);
-        enviarCadena("] ");
-
-        // Enviar a Arduino Nano
-        enviarAEsclavo(ARDUINO_NANO, "Hola Nano desde MSP430\n");
-
-        delay_ms(100);
-
-        // Enviar a Arduino Mega
-        enviarAEsclavo(ARDUINO_MEGA, "Hola Mega desde MSP430\n");
-
-        delay_ms(100);
-
-        // Enviar a ESP32
-        enviarAEsclavo(ESP32_ADDR, "Hola ESP32 desde MSP430\n");
-
-        delay_ms(2000);
+        // Enviar "Hola" al Arduino (solo la primera vez o cada cierto tiempo)
+        if(contador == 1 || contador % 10 == 0) {
+            enviarAArduinoMEGA("Hola MEGA desde MSP430");
+            enviarAArduinoNano("Hola NANO desde MSP430");
+            enviarAESP32("Hola ESP32 desde MSP430");
+        }
+        delay_ms(500);
     }
 }
