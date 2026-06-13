@@ -1,0 +1,23 @@
+#include <Wire.h>
+
+#define I2C_ADDR 0x08
+
+void setup() {
+  Serial.begin(9600);
+  Wire.begin(I2C_ADDR);
+  Wire.onReceive(receiveEvent);
+  
+  Serial.println("Esperando '9'...");
+}
+
+void receiveEvent(int howMany) {
+  while(Wire.available()) {
+    char c = Wire.read();
+    Serial.print("Recibido: ");
+    Serial.println(c);
+  }
+}
+
+void loop() {
+  delay(100);
+}
